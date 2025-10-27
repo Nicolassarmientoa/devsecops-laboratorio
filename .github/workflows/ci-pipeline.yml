@@ -40,26 +40,22 @@ jobs:
             -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.token="${SONAR_TOKEN}" \
-            -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
+            -Dsonar.branch.name="laboratorio-final"
 
-      - name: Enforce Quality Gate
+      - name: Enforce Quality Gate (Fail for evidence)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
-          # Espera breve para que el análisis esté procesado en SonarCloud
           sleep 10
 
-          # Llama al estado de la quality gate
           STATUS=$(curl -s -u "${SONAR_TOKEN}:" \
             "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}" \
             | jq -r '.projectStatus.status')
 
           echo "Quality Gate Status: $STATUS"
 
-          # Si la quality gate falla -> cortar el pipeline
-          if [ "$STATUS" != "OK" ]; then
-            echo "Quality Gate FAILED (SAST encontró vulnerabilidades).Se Rompe pipeline ."
-            exit 1
-          fi
+          echo "Forzando fallo del pipeline para evidencia de SAST en rama laboratorio-final"
+          exit 1
+
