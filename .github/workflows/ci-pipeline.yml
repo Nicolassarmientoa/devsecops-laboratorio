@@ -12,6 +12,7 @@ on:
 jobs:
   sast_sonar:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -25,17 +26,29 @@ jobs:
           mv sonar-scanner-* sonar-scanner
           echo "$(pwd)/sonar-scanner/bin" >> $GITHUB_PATH
 
-      - name: Run Sonar Scan
+      - name: Run SonarQube Analysis
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
           SONAR_ORG: ${{ secrets.SONAR_ORG }}
         run: |
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          echo "🔍 Running SonarQube analysis for branch: $BRANCH_NAME"
+          
           sonar-scanner \
             -Dsonar.organization="${SONAR_ORG}" \
             -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.login="${SONAR_TOKEN}" \
-            -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
-
+            -Dsonar.token="${SONAR_TOKEN}" \
+            -Dsonar.branch.name="${BRANCH_NAME}" \
+            -Dsonar.scm.provider=git \
+            -Dsonar.sourceEncoding=UTF-8
+          
+          # Validar resultado
+          if [ $? -ne 0 ]; then
+            echo "❌ SonarQube analysis failed. Check your token, project key, or configuration."
+            exit 1
+          else
+            echo "✅ SonarQube analysis completed successfully."
+          fi
