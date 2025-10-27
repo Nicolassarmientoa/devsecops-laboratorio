@@ -4,10 +4,12 @@ on:
   push:
     branches:
       - main
+      - laboratorio-final
       - 'feature/**'
   pull_request:
     branches:
       - main
+      - laboratorio-final
 
 jobs:
   sast_sonar:
@@ -26,6 +28,7 @@ jobs:
           echo "$(pwd)/sonar-scanner/bin" >> $GITHUB_PATH
 
       - name: Run Sonar Scan
+        id: sonar
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -39,3 +42,24 @@ jobs:
             -Dsonar.login="${SONAR_TOKEN}" \
             -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
 
+      - name: Enforce Quality Gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          # Espera breve para que el análisis esté procesado en SonarCloud
+          sleep 10
+
+          # Llama al estado de la quality gate
+          STATUS=$(curl -s -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}" \
+            | jq -r '.projectStatus.status')
+
+          echo "Quality Gate Status: $STATUS"
+
+          # Si la quality gate falla -> cortar el pipeline
+          if [ "$STATUS" != "OK" ]; then
+            echo "Quality Gate FAILED (SAST encontró vulnerabilidades).Se Rompe pipeline ."
+            exit 1
+          fi
