@@ -1,5 +1,5 @@
 name: devsecops-pipeline
-#1
+
 on:
   push:
     branches:
@@ -38,3 +38,4 @@ jobs:
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.login="${SONAR_TOKEN}" \
             -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
+
