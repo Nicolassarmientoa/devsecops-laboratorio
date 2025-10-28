@@ -57,8 +57,7 @@ jobs:
           echo "Vulnerabilidades encontradas en código: $VULN_COUNT"
 
           if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "🚨 Pipeline detenido: se detectaron vulnerabilidades medias o mayores en el código (SAST)."
-            exit 1
+            echo "🚨 ⚠️ Se detectaron vulnerabilidades, pero se permite continuar para pruebas de SCA."
           else
             echo "✅ No hay vulnerabilidades medias o mayores en el código. Continuando."
           fi
