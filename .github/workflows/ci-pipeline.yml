@@ -12,7 +12,6 @@ on:
 jobs:
   sast_sonar:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -26,29 +25,36 @@ jobs:
           mv sonar-scanner-* sonar-scanner
           echo "$(pwd)/sonar-scanner/bin" >> $GITHUB_PATH
 
-      - name: Run SonarQube Analysis
+      - name: Run Sonar Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
           SONAR_ORG: ${{ secrets.SONAR_ORG }}
         run: |
-          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
-          echo "🔍 Running SonarQube analysis for branch: $BRANCH_NAME"
-          
           sonar-scanner \
             -Dsonar.organization="${SONAR_ORG}" \
             -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
             -Dsonar.token="${SONAR_TOKEN}" \
-            -Dsonar.branch.name="${BRANCH_NAME}" \
-            -Dsonar.scm.provider=git \
-            -Dsonar.sourceEncoding=UTF-8
-          
-          # Validar resultado
-          if [ $? -ne 0 ]; then
-            echo "❌ SonarQube analysis failed. Check your token, project key, or configuration."
+            -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
+
+      - name: Verificar vulnerabilidades medias o mayores
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+        run: |
+          echo "🔍 Verificando vulnerabilidades de severidad MEDIA o mayor..."
+          VULN_COUNT=$(curl -s -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&types=VULNERABILITY&severities=MAJOR,CRITICAL,BLOCKER" \
+            | jq '.total')
+
+          echo "Vulnerabilidades encontradas: $VULN_COUNT"
+
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "🚨 Pipeline detenido: se detectaron vulnerabilidades medias o mayores."
             exit 1
           else
-            echo "✅ SonarQube analysis completed successfully."
+            echo "✅ No se detectaron vulnerabilidades medias o mayores. Pipeline exitoso."
           fi
