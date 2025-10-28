@@ -3,15 +3,17 @@ name: devsecops-pipeline
 on:
   push:
     branches:
-      - main
       - laboratorio-final
+      - main
       - 'feature/**'
   pull_request:
     branches:
-      - main
       - laboratorio-final
+      - main
 
 jobs:
+
+  # 1. SAST (Static Application Security Testing) con SonarCloud
   sast_sonar:
     runs-on: ubuntu-latest
     steps:
@@ -28,7 +30,6 @@ jobs:
           echo "$(pwd)/sonar-scanner/bin" >> $GITHUB_PATH
 
       - name: Run Sonar Scan
-        id: sonar
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -39,25 +40,68 @@ jobs:
             -Dsonar.organization="${SONAR_ORG}" \
             -Dsonar.projectKey="${SONAR_PROJECT_KEY}" \
             -Dsonar.host.url="${SONAR_HOST_URL}" \
-            -Dsonar.login="${SONAR_TOKEN}" \
+            -Dsonar.token="${SONAR_TOKEN}" \
             -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
 
-      - name: Verificar vulnerabilidades medias o mayores
+      - name: Verificar vulnerabilidades medias o mayores (SAST)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
         run: |
-          echo "🔍 Verificando vulnerabilidades de severidad MEDIA o mayor..."
+          echo "🔍 Verificando vulnerabilidades de severidad MEDIA o mayor en código fuente (SAST)..."
           VULN_COUNT=$(curl -s -u "${SONAR_TOKEN}:" \
             "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&types=VULNERABILITY&severities=MAJOR,CRITICAL,BLOCKER" \
             | jq '.total')
 
-          echo "Vulnerabilidades encontradas: $VULN_COUNT"
+          echo "Vulnerabilidades encontradas en código: $VULN_COUNT"
 
           if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "🚨 Pipeline detenido: se detectaron vulnerabilidades medias o mayores."
+            echo "🚨 Pipeline detenido: se detectaron vulnerabilidades medias o mayores en el código (SAST)."
             exit 1
           else
-            echo "✅ No se detectaron vulnerabilidades medias o mayores. Pipeline exitoso."
+            echo "✅ No hay vulnerabilidades medias o mayores en el código. Continuando."
+          fi
+
+  # 2. SCA (Software Composition Analysis) sobre dependencias
+  sca_dependencies:
+    runs-on: ubuntu-latest
+    needs: sast_sonar
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Instalar Trivy
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wget
+          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz -O trivy.tar.gz
+          tar -xzf trivy.tar.gz
+          sudo mv trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Escaneo SCA de dependencias (Trivy filesystem)
+        id: trivy_sca
+        run: |
+          echo "🔍 Analizando dependencias (SCA)..."
+          # --exit-code 0  -> no rompe aún
+          # Guardamos el resultado en JSON para post-procesarlo
+          trivy fs --security-checks vuln --format json . > sca-report.json || true
+
+          echo "✅ Reporte SCA generado en sca-report.json"
+
+      - name: Evaluar severidad de vulnerabilidades en dependencias
+        run: |
+          echo "🔍 Verificando vulnerabilidades MEDIUM/HIGH/CRITICAL en dependencias..."
+          # Contar findings con severidad >= MEDIUM
+          # Trivy marca severidades como CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN
+          VULN_COUNT=$(cat sca-report.json | jq '[.. | objects? | select(.Severity == "CRITICAL" or .Severity == "HIGH" or .Severity == "MEDIUM")] | length')
+
+          echo "Vulnerabilidades en dependencias (MEDIUM o mayor): $VULN_COUNT"
+
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "🚨 Pipeline detenido: dependencias con vulnerabilidades medias o mayores (SCA)."
+            exit 1
+          else
+            echo "✅ No se detectaron vulnerabilidades medias o mayores en dependencias. Continuando."
           fi
