@@ -73,18 +73,21 @@ jobs:
       - name: Instalar Trivy
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y wget
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz -O trivy.tar.gz
-          tar -xzf trivy.tar.gz
-          sudo mv trivy /usr/local/bin/trivy
+          sudo apt-get install -y curl gnupg lsb-release
+
+          curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+
           trivy --version
 
       - name: Escaneo SCA de dependencias (Trivy filesystem)
-        id: trivy_sca
         run: |
           echo "🔍 Analizando dependencias (SCA)..."
-          # --exit-code 0  -> no rompe aún
-          # Guardamos el resultado en JSON para post-procesarlo
+          # Generamos reporte JSON sin romper todavía
           trivy fs --security-checks vuln --format json . > sca-report.json || true
 
           echo "✅ Reporte SCA generado en sca-report.json"
@@ -92,8 +95,6 @@ jobs:
       - name: Evaluar severidad de vulnerabilidades en dependencias
         run: |
           echo "🔍 Verificando vulnerabilidades MEDIUM/HIGH/CRITICAL en dependencias..."
-          # Contar findings con severidad >= MEDIUM
-          # Trivy marca severidades como CRITICAL/HIGH/MEDIUM/LOW/UNKNOWN
           VULN_COUNT=$(cat sca-report.json | jq '[.. | objects? | select(.Severity == "CRITICAL" or .Severity == "HIGH" or .Severity == "MEDIUM")] | length')
 
           echo "Vulnerabilidades en dependencias (MEDIUM o mayor): $VULN_COUNT"
@@ -102,5 +103,6 @@ jobs:
             echo "🚨 Pipeline detenido: dependencias con vulnerabilidades medias o mayores (SCA)."
             exit 1
           else
-            echo "✅ No se detectaron vulnerabilidades medias o mayores en dependencias. Continuando."
+            echo "✅ No se detectaron vulnerabilidades medias o mayores en dependencias. Pipeline exitoso."
           fi
+
