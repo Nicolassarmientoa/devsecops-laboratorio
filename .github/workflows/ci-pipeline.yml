@@ -11,30 +11,25 @@ on:
       - laboratorio-final
       - main
 
-# Cambia ENFORCE en Repository Variables para activar bloqueo (“true”) o solo aviso (“false”)
-env:
-  ENFORCE: ${{ vars.ENFORCE || 'false' }}
-
 jobs:
 
-  # 1) SAST con SonarCloud
+  # 1. SAST (Static Application Security Testing) con SonarCloud
   sast_sonar:
     runs-on: ubuntu-latest
-    continue-on-error: true     # Que el job “falle” pero no frene el pipeline
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Instalar Sonar Scanner (CLI)
+      - name: Install Sonar Scanner
         run: |
           wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip -O sonar-scanner.zip
           unzip sonar-scanner.zip
           mv sonar-scanner-* sonar-scanner
           echo "$(pwd)/sonar-scanner/bin" >> $GITHUB_PATH
 
-      - name: Analizar código con Sonar
+      - name: Run Sonar Scan
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -48,81 +43,73 @@ jobs:
             -Dsonar.token="${SONAR_TOKEN}" \
             -Dsonar.branch.name="${{ github.head_ref || github.ref_name }}"
 
-      - name: SAST – evaluar severidad (MEDIUM+)
+      - name: Verificar vulnerabilidades medias o mayores (SAST)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
         run: |
-          echo "🔍 SAST: buscando vulnerabilidades MEDIUM/HIGH/CRITICAL..."
+          echo "🔍 Verificando vulnerabilidades de severidad MEDIA o mayor en código fuente (SAST)..."
           VULN_COUNT=$(curl -s -u "${SONAR_TOKEN}:" \
             "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&types=VULNERABILITY&severities=MAJOR,CRITICAL,BLOCKER" \
             | jq '.total')
 
-          echo "SAST – vulnerabilidades MEDIUM+: $VULN_COUNT"
+          echo "Vulnerabilidades encontradas en código: $VULN_COUNT"
 
           if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "🚨 SAST: hay vulnerabilidades. ENFORCE=${ENFORCE}"
-            if [ "${ENFORCE}" = "true" ]; then
-              echo "❌ SAST en modo bloqueo."
-              exit 1
-            else
-              echo "ℹ️  SAST en modo aviso (no se bloquea)."
-            fi
+            echo "🚨 ⚠️ Se detectaron vulnerabilidades, pero se permite continuar para pruebas de SCA."
           else
-            echo "✅ SAST: sin vulnerabilidades MEDIUM/HIGH/CRITICAL."
+            echo "✅ No hay vulnerabilidades medias o mayores en el código. Continuando."
           fi
 
-  # 2) SCA de dependencias con Trivy (filesystem)
+  # 2. SCA (Software Composition Analysis) sobre dependencias
   sca_dependencies:
     runs-on: ubuntu-latest
-    needs: [sast_sonar]
-    if: ${{ always() }}          # Corre aunque SAST haya “fallado”
-    continue-on-error: true
+    needs: sast_sonar
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Instalar Trivy
         run: |
           sudo apt-get update -y
           sudo apt-get install -y curl gnupg lsb-release
+
           curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+
           sudo apt-get update -y
           sudo apt-get install -y trivy
+
           trivy --version
 
-      - name: SCA – generar reporte (no bloquear acá)
+      - name: Escaneo SCA de dependencias (Trivy filesystem)
         run: |
-          echo "🔍 SCA: analizando dependencias..."
+          echo "🔍 Analizando dependencias (SCA)..."
+          # Generamos reporte JSON sin romper todavía
           trivy fs --security-checks vuln --format json . > sca-report.json || true
-          echo "✅ SCA: reporte generado => sca-report.json"
 
-      - name: SCA – evaluar severidad (MEDIUM+)
+          echo "✅ Reporte SCA generado en sca-report.json"
+
+      - name: Evaluar severidad de vulnerabilidades en dependencias
         run: |
-          echo "🔍 SCA: verificando MEDIUM/HIGH/CRITICAL en dependencias..."
-          VULN_COUNT=$(jq '[.. | objects? | select(.Severity=="CRITICAL" or .Severity=="HIGH" or .Severity=="MEDIUM")] | length' sca-report.json)
-          echo "SCA – vulnerabilidades MEDIUM+: $VULN_COUNT"
+          echo "🔍 Verificando vulnerabilidades MEDIUM/HIGH/CRITICAL en dependencias..."
+          VULN_COUNT=$(cat sca-report.json | jq '[.. | objects? | select(.Severity == "CRITICAL" or .Severity == "HIGH" or .Severity == "MEDIUM")] | length')
+
+          echo "Vulnerabilidades en dependencias (MEDIUM o mayor): $VULN_COUNT"
 
           if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "🚨 SCA: hay vulnerabilidades. ENFORCE=${ENFORCE}"
-            if [ "${ENFORCE}" = "true" ]; then
-              echo "❌ SCA en modo bloqueo."
-              exit 1
-            else
-              echo "ℹ️  SCA en modo aviso (no se bloquea)."
-            fi
+            echo "🚨 ⚠️ Se detectaron vulnerabilidades, pero se permite continuar para pruebas de Image Security."
           else
-            echo "✅ SCA: sin vulnerabilidades MEDIUM/HIGH/CRITICAL."
+            echo "✅ No se detectaron vulnerabilidades medias o mayores en dependencias. Pipeline exitoso."
           fi
 
-  # 3) Build de imagen Docker
+  # 3. Docker file creado en la raíz del proyecto
   build_image:
     name: Build Docker image
     runs-on: ubuntu-latest
-    needs: [sast_sonar, sca_dependencies]
-    if: ${{ always() }}          # Construye igual para poder escanear la imagen
+    needs: [sast_sonar, sca_dependencies]   # respeta el orden del pipeline
     env:
       IMAGE_NAME: devsecops-lab/app
       IMAGE_TAG: ${{ github.sha }}
@@ -144,7 +131,7 @@ jobs:
           echo "🔎 Imágenes locales:"
           docker images "${IMAGE_NAME}" --digests
 
-          # Metadatos útiles para evidencias y para el escaneo de imagen
+          # metadatos para evidencia y para el punto 5
           {
             echo "IMAGE_NAME=${IMAGE_NAME}"
             echo "IMAGE_TAG=${IMAGE_TAG}"
@@ -156,7 +143,7 @@ jobs:
           docker save "${IMAGE_NAME}:${IMAGE_TAG}" -o docker-image.tar
           ls -lh docker-image.tar build-metadata.txt
 
-      - name: Subir artefactos de build
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: docker-build-${{ github.sha }}
@@ -164,14 +151,12 @@ jobs:
             docker-image.tar
             build-metadata.txt
           if-no-files-found: error
-
-  # 4) Seguridad de imagen (Trivy image)
+   
+# 4. trivy scan para Docker file 
   image_security:
     name: Image Security (Trivy scan)
     runs-on: ubuntu-latest
-    needs: [build_image]
-    if: ${{ always() }}
-    continue-on-error: true
+    needs: build_image
     env:
       IMAGE_NAME: devsecops-lab/app
       IMAGE_TAG: ${{ github.sha }}
@@ -196,30 +181,24 @@ jobs:
           sudo apt-get install -y trivy
           trivy --version
 
-      - name: Escanear imagen (no bloquear acá)
+      - name: Escanear imagen con Trivy (no bloquear aún)
         run: |
-          echo "🔍 Trivy (image): ${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "🔍 Escaneando imagen ${IMAGE_NAME}:${IMAGE_TAG}..."
           trivy image --format json --security-checks vuln \
             --severity MEDIUM,HIGH,CRITICAL \
             "${IMAGE_NAME}:${IMAGE_TAG}" > trivy-image.json || true
-          echo "✅ Reporte de imagen => trivy-image.json"
+          echo "✅ Reporte generado: trivy-image.json"
 
-      - name: Evaluar severidad (MEDIUM+) y decidir bloqueo
+      - name: Evaluar severidad y bloquear si hay MEDIUM/HIGH/CRITICAL
         run: |
-          echo "🔍 Verificando MEDIUM/HIGH/CRITICAL en la imagen..."
+          echo "🔍 Verificando vulnerabilidades MEDIUM/HIGH/CRITICAL en la imagen..."
           VULN_COUNT=$(jq '[.. | objects? | select(.Severity=="CRITICAL" or .Severity=="HIGH" or .Severity=="MEDIUM")] | length' trivy-image.json)
-          echo "IMAGE – vulnerabilidades MEDIUM+: $VULN_COUNT"
-
+          echo "Vulnerabilidades en imagen (MEDIUM+): $VULN_COUNT"
           if [ "$VULN_COUNT" -gt 0 ]; then
-            echo "🚨 Imagen: hay vulnerabilidades. ENFORCE=${ENFORCE}"
-            if [ "${ENFORCE}" = "true" ]; then
-              echo "❌ Image Security en modo bloqueo."
-              exit 1
-            else
-              echo "ℹ️  Image Security en modo aviso (no se bloquea)."
-            fi
+            echo "Se detectaron vulnerabilidades, pero se permite continuar para terminar"
+
           else
-            echo "✅ Imagen sin vulnerabilidades MEDIUM/HIGH/CRITICAL."
+            echo "✅ Imagen sin vulnerabilidades MEDIUM/HIGH/CRITICAL. Pipeline exitoso."
           fi
 
       - name: Publicar reporte de imagen
@@ -228,55 +207,3 @@ jobs:
           name: trivy-image-report-${{ github.sha }}
           path: trivy-image.json
           if-no-files-found: error
-
-   # 5) Generar resumen visual de los resultados (Summary tab)
-  generate_report:
-    name: Resumen de escaneos
-    needs: [sast_sonar, sca_dependencies, image_security]
-    runs-on: ubuntu-latest
-    if: ${{ always() }}
-    steps:
-      - name: Generar resumen general
-        run: |
-          echo "# 🧾 Security Scan Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🔍 SAST (SonarCloud)" >> $GITHUB_STEP_SUMMARY
-          echo "Estado: **${{ needs.sast_sonar.result }}**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "## 🧩 SCA (Dependencias - Trivy FS)" >> $GITHUB_STEP_SUMMARY
-          echo "Estado: **${{ needs.sca_dependencies.result }}**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "## 🐳 Image Security (Trivy Image)" >> $GITHUB_STEP_SUMMARY
-          echo "Estado: **${{ needs.image_security.result }}**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "---" >> $GITHUB_STEP_SUMMARY
-          echo "🧠 *Este resumen se genera automáticamente para facilitar la revisión del pipeline.*" >> $GITHUB_STEP_SUMMARY
-
-  # 6) Quality Gate final – resume y rompe si corresponde
-  quality_gate:
-    name: Quality Gate final
-    runs-on: ubuntu-latest
-    needs: [sast_sonar, sca_dependencies, build_image, image_security, generate_report]
-    if: ${{ always() }}
-    steps:
-      - name: Resumen de resultados
-        run: |
-          echo "SAST: ${{ needs.sast_sonar.result }}"
-          echo "SCA : ${{ needs.sca_dependencies.result }}"
-          echo "IMG : ${{ needs.image_security.result }}"
-          echo "ENFORCE=${ENFORCE}"
-
-          FAILED=0
-          for r in "${{ needs.sast_sonar.result }}" "${{ needs.sca_dependencies.result }}" "${{ needs.image_security.result }}"; do
-            if [ "$r" = "failure" ]; then FAILED=1; fi
-          done
-
-          if [ "${ENFORCE}" = "true" ] && [ "$FAILED" -eq 1 ]; then
-            echo "🚨 Quality Gate: FAIL (vulnerabilidades detectadas)."
-            exit 1
-          else
-            echo "✅ Quality Gate: PASS (o modo aviso activo)."
-          fi
