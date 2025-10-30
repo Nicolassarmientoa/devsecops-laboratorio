@@ -105,8 +105,9 @@ jobs:
             echo "✅ No se detectaron vulnerabilidades medias o mayores en dependencias. Pipeline exitoso."
           fi
 
+  # 3. Docker file creado en la raíz del proyecto
   build_image:
-    name: 4) Build Docker image
+    name: Build Docker image
     runs-on: ubuntu-latest
     needs: [sast_sonar, sca_dependencies]   # respeta el orden del pipeline
     env:
@@ -149,4 +150,60 @@ jobs:
           path: |
             docker-image.tar
             build-metadata.txt
+          if-no-files-found: error
+   
+# 4. trivy scan para Docker file 
+  image_security:
+    name: 5) Image Security (Trivy scan)
+    runs-on: ubuntu-latest
+    needs: build_image
+    env:
+      IMAGE_NAME: devsecops-lab/app
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - name: Descargar artefacto de la imagen
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-build-${{ github.sha }}
+
+      - name: Cargar imagen en Docker
+        run: |
+          docker load -i docker-image.tar
+          docker images "${IMAGE_NAME}" --digests
+
+      - name: Instalar Trivy
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl gnupg lsb-release
+          curl -fsSL https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+          trivy --version
+
+      - name: Escanear imagen con Trivy (no bloquear aún)
+        run: |
+          echo "🔍 Escaneando imagen ${IMAGE_NAME}:${IMAGE_TAG}..."
+          trivy image --format json --security-checks vuln \
+            --severity MEDIUM,HIGH,CRITICAL \
+            "${IMAGE_NAME}:${IMAGE_TAG}" > trivy-image.json || true
+          echo "✅ Reporte generado: trivy-image.json"
+
+      - name: Evaluar severidad y bloquear si hay MEDIUM/HIGH/CRITICAL
+        run: |
+          echo "🔍 Verificando vulnerabilidades MEDIUM/HIGH/CRITICAL en la imagen..."
+          VULN_COUNT=$(jq '[.. | objects? | select(.Severity=="CRITICAL" or .Severity=="HIGH" or .Severity=="MEDIUM")] | length' trivy-image.json)
+          echo "Vulnerabilidades en imagen (MEDIUM+): $VULN_COUNT"
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "🚨 Pipeline detenido: imagen con vulnerabilidades medias o mayores (Image Security)."
+            exit 1
+          else
+            echo "✅ Imagen sin vulnerabilidades MEDIUM/HIGH/CRITICAL. Pipeline exitoso."
+          fi
+
+      - name: Publicar reporte de imagen
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-report-${{ github.sha }}
+          path: trivy-image.json
           if-no-files-found: error
