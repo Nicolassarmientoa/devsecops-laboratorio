@@ -231,7 +231,7 @@ jobs:
 
    # 5) Generar resumen visual de los resultados (Summary tab)
   generate_report:
-    name: 5) Resumen de escaneos
+    name: Resumen de escaneos
     needs: [sast_sonar, sca_dependencies, image_security]
     runs-on: ubuntu-latest
     if: ${{ always() }}
@@ -254,10 +254,10 @@ jobs:
 
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "🧠 *Este resumen se genera automáticamente para facilitar la revisión del pipeline.*" >> $GITHUB_STEP_SUMMARY
-          
+
   # 6) Quality Gate final – resume y rompe si corresponde
   quality_gate:
-    name: 6) Quality Gate final
+    name: Quality Gate final
     runs-on: ubuntu-latest
     needs: [sast_sonar, sca_dependencies, build_image, image_security, generate_report]
     if: ${{ always() }}
